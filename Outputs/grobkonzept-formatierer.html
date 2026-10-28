@@ -83,7 +83,7 @@ input:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px soli
       </div>
       <div class="units" id="units" hidden></div>
       <div class="status" id="status" hidden></div>
-      <p class="hint">Der Wortlaut bleibt. Ziele werden zu «Ich kann …»-Sätzen, fehlende ergänzt Claude. Alte Daten, lokale Dateipfade und Logins werden gelb markiert, nicht gelöscht.</p>
+      <p class="hint">Der Wortlaut bleibt. Ziele werden zu «Ich kann …»-Sätzen, fehlende ergänzt Claude. Alte Daten, lokale Dateipfade und Logins werden gelb markiert und bleiben stehen.</p>
     </div>
   </section>
 
@@ -157,7 +157,11 @@ function split(raw){
     if(m&&l.trim().length<160){ cur={nr:+(m[1]||m[2]),kopf:l.trim(),lines:[l]}; chunks.push(cur); }
     else (cur?cur.lines:pre).push(l); }
   if(!chunks.length) return {pre:"",chunks:[{nr:1,kopf:"",text:raw}]};
-  return {pre:pre.join("\n").trim(),chunks:chunks.map(c=>({nr:c.nr,kopf:c.kopf,text:c.lines.join("\n").trim()}))};
+  const out=chunks.map(c=>({nr:c.nr,kopf:c.kopf,text:c.lines.join("\n").trim()}));
+  /* Kopfzeilen (Fachbereich, Klasse …) gehen in die Eckdaten. Steht im Vorspann mehr, wird er als «Vorbemerkungen» mitgenommen. */
+  const rest=pre.filter(l=>l.trim()&&!/^\s*(grobkonzept|fachbereich|teilbereich|schulort|klasse|abk(ü|ue)rzungen|seite\b|.{0,40}\bseite\s*$)/i.test(l));
+  if(rest.join(" ").length>20) out.unshift({nr:0,kopf:"Vorbemerkungen",text:"0. Einheit Vorbemerkungen (allgemeine Hinweise vor der ersten Einheit)\n"+pre.join("\n").trim()});
+  return {pre:pre.join("\n").trim(),chunks:out};
 }
 function updateSplitInfo(){ const raw=$("#raw").value.trim(); if(!raw){ $("#splitInfo").textContent=""; return; }
   const {chunks}=split(raw); $("#splitInfo").textContent=chunks.length>1?`${chunks.length} Einheiten erkannt`:"Wird als eine Einheit verarbeitet"; }
@@ -173,7 +177,7 @@ ${head}
 """`; }
 
 function unitPrompt(c,ctx){ return `Du formatierst EINE Einheit aus einem alten Grobkonzept einer Lehrperson (Oberstufe Schweiz, Lernende 13–15 Jahre) für OneNote neu.
-Der Text wurde aus Word kopiert. Tabellenzellen sind mit " ¦ " getrennt, Zeilenumbrüche in Zellen mit " ⏎ ". Die Spalten heissen meist «Inhalt ¦ Material und Medien ¦ (Sozial-/Arbeitsform) ¦ Bemerkung», können aber verrutscht sein. Links stehen als «Text <URL>». Abkürzungen: KL/KV = Klasse, LV = Lehrervortrag, LP = Lehrperson zeigt, DAV = TPS, PA, GA, EA, LG, SuS = Lernende.
+Der Text wurde aus Word kopiert. Tabellenzellen sind mit " ¦ " getrennt, Zeilenumbrüche in Zellen mit " ⏎ ". Die Spalten heissen meist «Inhalt ¦ Material und Medien ¦ (Sozial-/Arbeitsform) ¦ Bemerkung», können aber verrutscht sein. Links stehen als «Text <URL>». Abkürzungen: KL/KV = Klasse, LV = Vortrag der Lehrperson, LP = Lehrperson zeigt, DAV = TPS, PA, GA, EA, LG, SuS = Lernende.
 ${ctx?`Ganzes Grobkonzept: ${ctx}\n`:""}
 Antworte NUR mit einem JSON-Objekt in genau dieser Form:
 {"nr":${c.nr},"titel":"Titel der Einheit","zielOriginal":"…","lernziele":["Ich kann …"],"zieleErgaenzt":false,"schritte":[{"min":null,"sozialform":"KL","emoji":"🧪","titel":"…","inhalt":["…"],"material":["…"],"links":[{"name":"…","url":"https://…"}],"bemerkung":["…"],"pruefen":[{"text":"…","grund":"…"}]}],"materialEinheit":["…"],"linksEinheit":[],"bemerkungEinheit":["…"],"pruefenEinheit":[]}
@@ -260,66 +264,89 @@ function render(){
   $("#copyAll").disabled=!d||!unitsSorted(d).length;
   if(!d){ el.innerHTML=`<div class="empty">Hier erscheint das neue Grobkonzept.</div>`; return; }
   const fails=arr(d.fehler);
-  el.innerHTML=(fails.length?`<div class="failbox"><b>${fails.length===1?"Eine Einheit hat":"Einige Einheiten haben"} nicht geklappt.</b>${fails.map(f=>`<div class="row">Einheit ${h(f.nr)}: ${h(f.kopf||"")} <button class="btn ghost small" type="button" data-retry="${f._i}">Nochmals</button></div>`).join("")}</div>`:"")
+  el.innerHTML=(fails.length?`<div class="failbox"><b>${fails.length===1?"Eine Einheit hat":"Einige Einheiten haben"} nicht geklappt.</b>${fails.map(f=>`<div class="row">Einheit ${h(f.nr)}: ${h(f.kopf||"")} ${sampleFn?`<button class="btn ghost small" type="button" data-retry="${f._i}">Nochmals</button>`:""}</div>${f.grund?`<div class="hint">${h(f.grund)}</div>`:""}`).join("")}${fails.length>1&&sampleFn?`<div><button class="btn small" type="button" data-retryall>Alle offenen nochmals</button></div>`:""}</div>`:"")
     +(unitsSorted(d).length?`<div class="paper"><div style="${ON}">${fullHTML(d)}</div></div>`:"");
-  el.querySelectorAll("[data-retry]").forEach(b=>b.onclick=()=>retry(+b.dataset.retry));
+  el.querySelectorAll("[data-retry]").forEach(b=>b.onclick=()=>retry([+b.dataset.retry]));
+  el.querySelectorAll("[data-retryall]").forEach(b=>b.onclick=()=>retry(fails.map(f=>f._i)));
 }
 
 async function copy(html,text){
   try{ if(window.ClipboardItem&&navigator.clipboard&&navigator.clipboard.write){ await navigator.clipboard.write([new ClipboardItem({"text/html":new Blob([`<div style="${ON}">${html}</div>`],{type:"text/html"}),"text/plain":new Blob([text],{type:"text/plain"})})]); toast("Kopiert. In OneNote einfügen."); return; } }catch(e){}
+  /* Notlösung: die Vorschau markieren und kopieren, so bleibt die Tabelle erhalten */
+  try{ const el=document.querySelector(".paper > div"); if(el){ const r=document.createRange(); r.selectNodeContents(el); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); const ok=document.execCommand("copy"); sel.removeAllRanges(); if(ok){ toast("Kopiert. In OneNote einfügen."); return; } } }catch(e){}
   try{ await navigator.clipboard.writeText(text); toast("Als Text kopiert. In OneNote einfügen."); return; }catch(e){}
   const ta=document.createElement("textarea"); ta.value=text; ta.style.cssText="position:fixed;left:16px;right:16px;bottom:70px;height:40vh;z-index:40"; document.body.append(ta); ta.select(); toast("Markiert. Mit Cmd+C oder Ctrl+C kopieren."); setTimeout(()=>ta.remove(),8000);
 }
 $("#copyAll").onclick=()=>{ if(S.data) copy(fullHTML(S.data), fullText(S.data)); };
 
 /* ---------- Ablauf: Eckdaten, dann Einheit für Einheit (max. 3 gleichzeitig) ---------- */
-let sampleFn=null, ctl=null, job=null;
+let sampleFn=null, ctl=null, job=null, ready=false;
+$("#go").disabled=true;
 (async()=>{ try{ sampleFn=await window.claude?.use?.("sample"); }catch(e){ sampleFn=null; }
-  if(!sampleFn){ $("#go").disabled=true; status("Das Formatieren braucht Claude. Öffne die Seite in der Claude-App, dann funktioniert der Knopf.",true); } })();
+  ready=true; $("#go").disabled=!sampleFn;
+  if(!sampleFn) status("Das Formatieren braucht Claude. Öffne die Seite in der Claude-App, dann funktioniert der Knopf.",true); })();
 
-const ERR={not_granted:"Du hast Claude für diese Seite nicht erlaubt. Lade die Seite neu, um es nochmals zu erlauben.",rate_limited:"Gerade zu viele Anfragen. Versuch es in einer Minute nochmals.",prompt_too_large:"Diese Einheit ist zu lang. Teile sie im Text in zwei Einheiten auf (z. B. «3. Einheit» und «4. Einheit»)."};
+const ERR={not_granted:"Du hast Claude für diese Seite nicht erlaubt. Lade die Seite neu, um es nochmals zu erlauben.",
+  rate_limited:"Gerade zu viele Anfragen. Warte eine Minute und klick dann auf «Alle offenen nochmals».",
+  sampling_disabled:"Claude ist für diese Seite gerade ausgeschaltet. Prüfe die Einstellungen der Seite und lade sie neu.",
+  capability_disabled:"Claude ist für diese Seite gerade ausgeschaltet. Prüfe die Einstellungen der Seite und lade sie neu.",
+  capability_removed:"Claude ist für diese Seite nicht mehr verfügbar. Lade die Seite neu.",
+  not_declared:"Claude ist für diese Seite nicht eingerichtet. Lade die Seite neu.",
+  session_expired:"Deine Anmeldung ist abgelaufen. Lade die Seite neu.",
+  prompt_too_large:"Eine Einheit ist zu lang. Teile sie im Text in zwei Einheiten auf (z. B. «3. Einheit» und «4. Einheit»)."};
+const FATAL=new Set(["not_granted","rate_limited","sampling_disabled","capability_disabled","capability_removed","not_declared","session_expired"]);
+const DEAD=new Set(["not_granted","sampling_disabled","capability_disabled","capability_removed","not_declared","session_expired"]);
+const UNIT_ERR={invalid_json:"Antwort unvollständig, wohl zu lang. Teile die Einheit im Text in zwei auf und formatiere neu.",prompt_too_large:"Einheit zu lang. Teile sie im Text in zwei auf und formatiere neu."};
 function chips(){ const el=$("#units"); if(!job){ el.hidden=true; return; } el.hidden=false;
   el.innerHTML=job.chunks.map(c=>`<span class="unit ${c.st||""}" title="${h(c.kopf)}">${h(c.nr)}</span>`).join(""); }
 function save(){ store.set("gk-last",{raw:$("#raw").value,kopf:$("#kopf").value,data:S.data}); }
+function addFail(i,code){ const c=job.chunks[i]; c.st="err"; S.data.fehler=arr(S.data.fehler).filter(f=>f._i!==i).concat({_i:i,nr:c.nr,kopf:c.kopf.slice(0,80),grund:UNIT_ERR[code]||""}); }
 
-async function runUnit(i){ const c=job.chunks[i]; c.st="run"; chips();
-  try{ const r=await sampleFn.json(unitPrompt(c,job.ctx),{signal:ctl.signal,modelTier:"default"});
-    if(!r||!Array.isArray(r.schritte)) throw {code:"invalid_json"};
-    r._i=i; if(r.nr==null) r.nr=c.nr;
-    S.data.einheiten=arr(S.data.einheiten).filter(u=>u._i!==i).concat(r);
-    S.data.fehler=arr(S.data.fehler).filter(f=>f._i!==i); c.st="ok";
-  }catch(e){ if(e&&e.code==="cancelled") throw e; c.st="err"; c.code=e&&e.code;
-    S.data.fehler=arr(S.data.fehler).filter(f=>f._i!==i).concat({_i:i,nr:c.nr,kopf:c.kopf.slice(0,80)});
-    if(e&&(e.code==="not_granted"||e.code==="rate_limited")) throw e; }
+async function runUnit(i,me){ const c=me.chunks[i]; c.st="run"; chips();
+  let r, err;
+  try{ r=await sampleFn.json(unitPrompt(c,me.ctx),{signal:me.ctl.signal,modelTier:"default"}); if(!r||!Array.isArray(r.schritte)) err={code:"invalid_json"}; }
+  catch(e){ err=e||{}; }
+  if(job!==me||me.stop&&!r) return;   /* geleert oder abgebrochen */
+  if(err){ if(err.code==="cancelled") return; if(FATAL.has(err.code)){ me.stop=err.code; me.ctl.abort(); return; } addFail(i,err.code); }
+  else{ r._i=i; if(r.nr==null) r.nr=c.nr; S.data.einheiten=arr(S.data.einheiten).filter(u=>u._i!==i).concat(r); S.data.fehler=arr(S.data.fehler).filter(f=>f._i!==i); c.st="ok"; }
   chips(); save(); render(); }
 
-async function pool(idx){ let k=0; const next=async()=>{ while(k<idx.length){ const i=idx[k++]; await runUnit(i); status(`Claude formatiert … ${job.chunks.filter(c=>c.st==="ok").length} von ${job.chunks.length} Einheiten fertig.`); } };
+async function pool(idx,me){ let k=0; const next=async()=>{ while(k<idx.length&&!me.stop&&job===me){ const i=idx[k++]; await runUnit(i,me); status(`Claude formatiert … ${me.chunks.filter(c=>c.st==="ok").length} von ${me.chunks.length} Einheiten fertig.`); } };
   await Promise.all([next(),next(),next()]); }
 
 async function start(idx){
-  if(!sampleFn||S.busy) return;
-  S.busy=true; $("#go").disabled=true; $("#go").textContent="Formatiere …"; ctl=new AbortController();
+  if(!sampleFn||S.busy||!job) return;
+  const me=job; me.stop=null; me.ctl=ctl=new AbortController();
+  S.busy=true; $("#go").disabled=true; $("#go").textContent="Formatiere …";
   try{
-    if(!S.data.meta){ status("Claude liest die Eckdaten …");
-      try{ S.data.meta=await sampleFn.json(metaPrompt(($("#raw").value.trim()).slice(0,2500)),{signal:ctl.signal,modelTier:"quick"})||{}; }catch(e){ if(e&&(e.code==="not_granted"||e.code==="cancelled")) throw e; S.data.meta={}; }
-      render(); }
-    { const m=S.data.meta||{}; job.ctx=[m.thema,m.fach,m.klasse].filter(Boolean).join(", "); }
-    status(`Claude formatiert … 0 von ${job.chunks.length} Einheiten fertig. Pro Einheit meist 20–60 Sekunden.`);
-    await pool(idx);
-    const f=arr(S.data.fehler).length; status(f?`${f} Einheit${f>1?"en":""} hat nicht geklappt. Klick bei der Einheit auf «Nochmals».`:"",!!f);
-  }catch(e){ status(ERR[e&&e.code]??(e&&e.code==="cancelled"?"":"Das hat nicht geklappt. Bitte nochmals versuchen."),!(e&&e.code==="cancelled")); }
-  finally{ S.busy=false; $("#go").disabled=!sampleFn; $("#go").textContent="Formatieren"; save(); render(); }
+    if(!S.data.meta||!S.data.meta.thema){ status("Claude liest die Eckdaten …");
+      try{ S.data.meta=await sampleFn.json(metaPrompt(($("#raw").value.trim()).slice(0,2500)),{signal:me.ctl.signal,modelTier:"quick"})||{}; }
+      catch(e){ if(e&&FATAL.has(e.code)) me.stop=e.code; else if(!(e&&e.code==="cancelled")) S.data.meta=S.data.meta||{}; }
+      if(job!==me) return; render(); }
+    { const m=S.data.meta||{}; me.ctx=[m.thema,m.fach,m.klasse].filter(Boolean).join(", "); }
+    if(!me.stop){ status(`Claude formatiert … 0 von ${me.chunks.length} Einheiten fertig. Pro Einheit meist 20–60 Sekunden.`); await pool(idx,me); }
+    if(job!==me) return;
+    idx.forEach(i=>{ if(me.chunks[i].st!=="ok"&&!arr(S.data.fehler).some(f=>f._i===i)) addFail(i,""); });
+    const f=arr(S.data.fehler).length;
+    if(me.stop) status(ERR[me.stop]||"Das hat nicht geklappt. Bitte nochmals versuchen.",true);
+    else status(f?`${f>1?f+" Einheiten haben":"1 Einheit hat"} nicht geklappt. Klick auf «Nochmals».`:"",!!f);
+    if(DEAD.has(me.stop)) sampleFn=null;
+  }finally{ if(job===me){ S.busy=false; $("#go").disabled=!sampleFn; $("#go").textContent="Formatieren"; chips(); save(); render(); } }
 }
-function retry(i){ if(!job){ const raw=$("#raw").value.trim(); if(!raw) return; job={chunks:split(raw).chunks.map(c=>({...c,st:""})),ctx:""}; arr(S.data&&S.data.einheiten).forEach(u=>{ if(job.chunks[u._i]) job.chunks[u._i].st="ok"; }); } start([i]); }
+function ensureJob(){ if(job) return true; const raw=$("#raw").value.trim(); if(!raw) return false;
+  job={chunks:split(raw).chunks.map(c=>({...c,st:""})),ctx:""}; arr(S.data&&S.data.einheiten).forEach(u=>{ if(job.chunks[u._i]) job.chunks[u._i].st="ok"; }); return true; }
+function retry(list){ if(!S.data||!ensureJob()) return; start(list.filter(i=>job.chunks[i])); }
 
 $("#go").onclick=()=>{
+  if(!ready||!sampleFn||S.busy) return;
   const raw=$("#raw").value.trim(); if(!raw){ status("Zuerst das alte Grobkonzept einfügen.",true); return; }
-  const sp=split(raw); job={chunks:sp.chunks.map(c=>({...c,st:""})),ctx:""};
+  const sp=split(raw);
   if(sp.chunks.some(c=>c.text.length>24000)){ status(ERR.prompt_too_large,true); return; }
+  job={chunks:sp.chunks.map(c=>({...c,st:""})),ctx:""};
   S.data={meta:null,einheiten:[],fehler:[]}; S.example=false; chips(); render();
   start(job.chunks.map((_,i)=>i));
 };
-$("#clear").onclick=()=>{ if(ctl) ctl.abort(); $("#raw").value=""; $("#kopf").value=""; S.data=null; S.example=false; job=null; chips(); store.set("gk-last",null); render(); status(""); updateSplitInfo(); $("#raw").focus(); };
+$("#clear").onclick=()=>{ if(ctl) ctl.abort(); job=null; S.busy=false; $("#go").disabled=!sampleFn; $("#go").textContent="Formatieren"; $("#raw").value=""; $("#kopf").value=""; S.data=null; S.example=false; chips(); store.set("gk-last",null); render(); status(""); updateSplitInfo(); $("#raw").focus(); };
 $("#raw").addEventListener("input",()=>{ updateSplitInfo(); const l=store.get("gk-last")||{}; store.set("gk-last",{...l,raw:$("#raw").value}); });
 $("#kopf").addEventListener("input",()=>{ const l=store.get("gk-last")||{}; store.set("gk-last",{...l,kopf:$("#kopf").value}); if(S.data) render(); });
 $("#qrOn").addEventListener("change",render);
